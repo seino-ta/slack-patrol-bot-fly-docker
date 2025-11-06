@@ -6,6 +6,9 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -30,6 +33,17 @@ function parseEnvBoolean(value) {
   if (["1", "true", "yes", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "off"].includes(normalized)) return false;
   return null;
+}
+
+function parseEnvNumber(value) {
+  if (value === undefined || value === null) return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function parseEnvInteger(value) {
+  const num = parseEnvNumber(value);
+  return num !== null && Number.isInteger(num) ? num : null;
 }
 
 function validateRequiredEnv() {
@@ -104,6 +118,33 @@ function validateConfigSchema(cfg) {
       if (cfg.logging.file !== undefined && typeof cfg.logging.file !== "string") {
         errors.push("logging.file は文字列パスで指定してください");
       }
+      if (cfg.logging.rotation !== undefined) {
+        const rotation = cfg.logging.rotation;
+        if (!rotation || typeof rotation !== "object") {
+          errors.push("logging.rotation はオブジェクトで指定してください");
+        } else {
+          if (
+            Object.prototype.hasOwnProperty.call(rotation, "max_size_mb") &&
+            (typeof rotation.max_size_mb !== "number" ||
+              !Number.isFinite(rotation.max_size_mb) ||
+              rotation.max_size_mb <= 0)
+          ) {
+            errors.push(
+              "logging.rotation.max_size_mb は 0 より大きい数値で指定してください",
+            );
+          }
+          if (
+            Object.prototype.hasOwnProperty.call(rotation, "max_files") &&
+            (typeof rotation.max_files !== "number" ||
+              !Number.isInteger(rotation.max_files) ||
+              rotation.max_files < 1)
+          ) {
+            errors.push(
+              "logging.rotation.max_files は 1 以上の整数で指定してください",
+            );
+          }
+        }
+      }
     }
   }
   return errors;
@@ -126,6 +167,43 @@ const CONSOLE_METHODS = {
       : console.log.bind(console),
 };
 
+function shouldRotateFile(filePath, maxSizeBytes) {
+  if (!maxSizeBytes || maxSizeBytes <= 0) return false;
+  try {
+    const stats = statSync(filePath);
+    return stats.size >= maxSizeBytes;
+  } catch (err) {
+    if (err && err.code !== "ENOENT") {
+      CONSOLE_METHODS.warn(`ログファイルサイズ取得に失敗: ${err.message}`);
+    }
+    return false;
+  }
+}
+
+function rotateLogFiles(basePath, maxFiles) {
+  const maxIndex = Math.max(1, maxFiles || 1);
+  const removeIfExists = (targetPath) => {
+    if (!existsSync(targetPath)) return;
+    try {
+      unlinkSync(targetPath);
+    } catch (err) {
+      if (!err || err.code !== "ENOENT") {
+        throw err;
+      }
+    }
+  };
+
+  removeIfExists(`${basePath}.${maxIndex}`);
+  for (let index = maxIndex; index >= 1; index -= 1) {
+    const src = index === 1 ? basePath : `${basePath}.${index - 1}`;
+    const dest = `${basePath}.${index}`;
+    if (!existsSync(src)) continue;
+    removeIfExists(dest);
+    renameSync(src, dest);
+  }
+  appendFileSync(basePath, "", "utf-8");
+}
+
 function safeSerializeMeta(meta) {
   if (!meta) return "";
   try {
@@ -137,9 +215,32 @@ function safeSerializeMeta(meta) {
   }
 }
 
-function createLogger(activeLevel, filePath) {
+function createLogger(activeLevel, filePath, rotationOptions = null) {
   const fallbackRank = LOG_LEVEL_PRIORITY.info;
   const activeRank = LOG_LEVEL_PRIORITY[activeLevel] ?? fallbackRank;
+
+  const rotationConfig =
+    rotationOptions &&
+    typeof rotationOptions.maxSizeBytes === "number" &&
+    rotationOptions.maxSizeBytes > 0
+      ? {
+          maxSizeBytes: rotationOptions.maxSizeBytes,
+          maxFiles: Math.max(1, rotationOptions.maxFiles ?? 5),
+        }
+      : null;
+
+  const enforceRotation = () => {
+    if (!rotationConfig) return;
+    if (!shouldRotateFile(filePath, rotationConfig.maxSizeBytes)) return;
+    try {
+      rotateLogFiles(filePath, rotationConfig.maxFiles);
+      CONSOLE_METHODS.debug(
+        `ログファイルをローテーションしました: ${filePath}`,
+      );
+    } catch (err) {
+      CONSOLE_METHODS.error(`ログローテーションに失敗: ${err.message}`);
+    }
+  };
 
   const shouldLog = (level) =>
     (LOG_LEVEL_PRIORITY[level] ?? LOG_LEVEL_PRIORITY.debug) <= activeRank;
@@ -152,6 +253,7 @@ function createLogger(activeLevel, filePath) {
     const line = `${new Date().toISOString()} [${level.toUpperCase()}] ${consoleText}`;
     try {
       appendFileSync(filePath, `${line}\n`, "utf-8");
+      enforceRotation();
     } catch (err) {
       CONSOLE_METHODS.error(`ログ書き込み失敗: ${err.message}`);
     }
@@ -201,6 +303,31 @@ const logIncludeMessage =
     : typeof loggingConfig.include_message === "boolean"
     ? loggingConfig.include_message
     : false;
+const rawRotationConfig = loggingConfig.rotation ?? {};
+const rotationMaxSizeEnv = parseEnvNumber(process.env.LOG_ROTATE_MAX_SIZE_MB);
+const rotationMaxFilesEnv = parseEnvInteger(process.env.LOG_ROTATE_MAX_FILES);
+const rotationMaxSizeMb =
+  rotationMaxSizeEnv !== null
+    ? rotationMaxSizeEnv
+    : typeof rawRotationConfig.max_size_mb === "number"
+    ? rawRotationConfig.max_size_mb
+    : undefined;
+const rotationMaxFiles =
+  rotationMaxFilesEnv !== null
+    ? rotationMaxFilesEnv
+    : typeof rawRotationConfig.max_files === "number"
+    ? rawRotationConfig.max_files
+    : undefined;
+const rotationOptions =
+  typeof rotationMaxSizeMb === "number" && rotationMaxSizeMb > 0
+    ? {
+        maxSizeBytes: rotationMaxSizeMb * 1024 * 1024,
+        maxFiles:
+          typeof rotationMaxFiles === "number" && rotationMaxFiles >= 1
+            ? rotationMaxFiles
+            : 5,
+      }
+    : null;
 let resolvedLevel = "off";
 let logFilePath = null;
 let logger = createNoopLogger();
@@ -230,12 +357,18 @@ if (!loggingDisabled) {
   if (!existsSync(logDir)) {
     mkdirSync(logDir, { recursive: true });
   }
-  logger = createLogger(resolvedLevel, logFilePath);
+  logger = createLogger(resolvedLevel, logFilePath, rotationOptions);
   logger.info("ロガー初期化", {
     env: appEnv,
     level: resolvedLevel,
     file: logFilePath,
     includeMessage: logIncludeMessage,
+    rotation: rotationOptions
+      ? {
+          maxSizeMb: Number((rotationOptions.maxSizeBytes / (1024 * 1024)).toFixed(3)),
+          maxFiles: rotationOptions.maxFiles,
+        }
+      : null,
   });
 }
 

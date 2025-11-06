@@ -1,7 +1,7 @@
 {
     "mode": "include",
     "channels": [
-        "C09LRD70XAS",
+        "C09KF368VC5",
         "C08999999"
     ],
     "cooldown_sec_user": 0,
@@ -14,8 +14,13 @@
         "flood": true
     },
     "logging": {
+        "enabled": false,
         "file": "logs/app.log",
         "level": "info",
-        "include_message": false
+        "include_message": false,
+        "rotation": {
+            "max_size_mb": 20,
+            "max_files": 3
+        }
     }
 }

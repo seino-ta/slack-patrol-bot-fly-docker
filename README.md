@@ -65,6 +65,7 @@ npm install
 - `config.json`
   - `"channels"` に監視対象チャンネルの ID（`Cxxxx` 形式）を列挙。
   - クールダウンや連投判定の閾値を必要に応じて調整。
+  - 永続ログをローテーションしたい場合は `logging.rotation` に `max_size_mb`（MB 単位の最大サイズ）と `max_files`（保持するバックアップ数）を指定可能。
 - `messages.json`
   - 注意文を組織向けの文言に編集可。
 
@@ -150,6 +151,7 @@ Fly.io へデプロイすると常時稼働させやすくなります。恒久�
 - ログは標準出力とファイルに同時出力されます。既定では `logs/app.log`、`APP_ENV=development` の場合は `logs/dev.log` に追記されます（存在しない場合は起動時にディレクトリごと作成）。
 - ログレベルは `LOG_LEVEL` 環境変数（`error` / `warn` / `info` / `debug`）か、`config.json` の `logging.level` で指定できます。環境変数が優先され、指定がなければ `APP_ENV=development` 時は `debug`、それ以外は `info` になります。
 - 出力先ファイルは `LOG_FILE` 環境変数、または `config.json` の `logging.file` で変更可能です。相対パスはプロジェクトルート基準で解釈されます。
+- ファイルサイズによるローテーションは `config.logging.rotation.max_size_mb`（MB 単位）と `max_files`（バックアップ数）で制御できます。環境変数 `LOG_ROTATE_MAX_SIZE_MB` と `LOG_ROTATE_MAX_FILES` を使うと一時的に上書きできます。
 - ログ出力自体を止めたい場合は `config.logging.enabled` を `false` にするか、`LOG_DISABLED=1` を設定してください。
 - プライバシー保護のため、メッセージ本文はデフォルトではログに記録されません。検証などで本文を出力したい場合は `config.logging.include_message` を `true` にするか `LOG_INCLUDE_MESSAGE=1` を設定します。
 - 調査時は `npm start --silent` のように起動して `tail -f logs/app.log` でファイルを監視すると便利です。大量のデバッグログが不要な場合は `LOG_LEVEL=info` で抑制できます。
@@ -193,6 +195,8 @@ Fly.io へデプロイすると常時稼働させやすくなります。恒久�
 - `APP_ENV`：`development` を指定するとデバッグログが有効になり、既定のログファイルが `logs/dev.log` へ切り替わります。未指定時は `production` として扱われます。
 - `LOG_LEVEL`：ログレベルを強制的に指定（`error` / `warn` / `info` / `debug`）。未指定時は `APP_ENV` や `config.json` に従います。
 - `LOG_FILE`：ログファイルのパス。相対パスはプロジェクトルート基準、絶対パスも指定可能。
+- `LOG_ROTATE_MAX_SIZE_MB`：ログファイルをローテーションする閾値（MB 単位）。指定するとローテーション機能が有効になります。
+- `LOG_ROTATE_MAX_FILES`：ローテーションで保持するバックアップファイル数。`LOG_ROTATE_MAX_SIZE_MB` と併用。
 - `LOG_DISABLED`：`1` / `true` などを指定するとロギングを完全に無効化します。
 - `LOG_INCLUDE_MESSAGE`：`1` / `true` などを指定するとログにメッセージ本文（先頭120文字）を含めます。指定が無い場合は本文を記録しません。
 - `SHEETS_WEBHOOK_URL`：Apps Script など外部ログ集約先の HTTPS URL。空欄にするとログ送信を無効化。
